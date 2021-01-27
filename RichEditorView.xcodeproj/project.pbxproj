@@ -175,11 +175,19 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		61CC873425C17A77004BC492 /* Source */ = {
+			isa = PBXGroup;
+			children = (
+				FBA6AAFB1AD3EC9F00721644 /* RichEditorView */,
+			);
+			path = Source;
+			sourceTree = "<group>";
+		};
 		FBA6AAEF1AD3EC9F00721644 = {
 			isa = PBXGroup;
 			children = (
+				61CC873425C17A77004BC492 /* Source */,
 				FBA6ABC41AD3FD2E00721644 /* UIKit.framework */,
-				FBA6AAFB1AD3EC9F00721644 /* RichEditorView */,
 				FBA6AB081AD3EC9F00721644 /* RichEditorViewTests */,
 				FBA6AAFA1AD3EC9F00721644 /* Products */,
 			);
@@ -400,6 +408,7 @@
 			developmentRegion = English;
 			hasScannedForEncodings = 0;
 			knownRegions = (
+				English,
 				en,
 			);
 			mainGroup = FBA6AAEF1AD3EC9F00721644;
