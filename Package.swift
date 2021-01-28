@@ -19,7 +19,23 @@ let package = Package(
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
         // Targets can depend on other targets in this package, and on products in packages this package depends on.
-        .target(name: "RichEditorView"),
+        .target(
+           name: "RichEditorView_ObjC",
+           dependencies: [],
+           path: "Source/RichEditorView/ObjC/",
+            publicHeadersPath: "Public",
+           cSettings: [
+            .headerSearchPath("Internal"),
+            .headerSearchPath("Public"),
+//            .headerSearchPath("ObjC/"),
+           ]
+        ),
+        .target(name: "RichEditorView",
+                dependencies: ["RichEditorView_ObjC"],
+                path: "Source/RichEditorView/",
+                exclude: ["ObjC"],
+                resources:[.process("Assets/icons"),
+                           .process("Assets/editor"),]),
         .testTarget(
             name: "RichEditorViewTests",
             dependencies: ["RichEditorView"]),

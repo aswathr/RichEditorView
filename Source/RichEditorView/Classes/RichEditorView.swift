@@ -6,6 +6,7 @@
 //
 
 import UIKit
+import RichEditorView_ObjC
 
 /// RichEditorDelegate defines callbacks for the delegate of the RichEditorView
 @objc public protocol RichEditorDelegate: class {
