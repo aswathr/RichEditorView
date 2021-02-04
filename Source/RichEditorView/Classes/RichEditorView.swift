@@ -7,6 +7,8 @@
 
 import UIKit
 import RichEditorView_ObjC
+import WebKit
+import Combine
 
 /// RichEditorDelegate defines callbacks for the delegate of the RichEditorView
 @objc public protocol RichEditorDelegate: class {
@@ -25,10 +27,10 @@ import RichEditorView_ObjC
     @objc optional func richEditorLostFocus(_ editor: RichEditorView)
     
     /// Called when the RichEditorView has become ready to receive input
-    /// More concretely, is called when the internal UIWebView loads for the first time, and contentHTML is set
+    /// More concretely, is called when the internal WKWebView loads for the first time, and contentHTML is set
     @objc optional func richEditorDidLoad(_ editor: RichEditorView)
     
-    /// Called when the internal UIWebView begins loading a URL that it does not know how to respond to
+    /// Called when the internal WKWebView begins loading a URL that it does not know how to respond to
     /// For example, if there is an external link, and then the user taps it
     @objc optional func richEditor(_ editor: RichEditorView, shouldInteractWith url: URL) -> Bool
     
@@ -38,8 +40,10 @@ import RichEditorView_ObjC
 }
 
 /// RichEditorView is a UIView that displays richly styled text, and allows it to be edited in a WYSIWYG fashion.
-@objcMembers open class RichEditorView: UIView, UIScrollViewDelegate, UIWebViewDelegate, UIGestureRecognizerDelegate {
+@objcMembers open class RichEditorView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
 
+    var anyCancellables = Set<AnyCancellable>()
+    
     // MARK: Public Properties
 
     /// The delegate that will receive callbacks when certain actions are completed.
@@ -52,8 +56,8 @@ import RichEditorView_ObjC
         set { webView.cjw_inputAccessoryView = newValue }
     }
 
-    /// The internal UIWebView that is used to display the text.
-    open private(set) var webView: UIWebView
+    /// The internal WKWebView that is used to display the text.
+    open private(set) var webView: WKWebView
 
     /// Whether or not scroll is enabled on the view.
     open var isScrollEnabled: Bool = true {
@@ -63,9 +67,13 @@ import RichEditorView_ObjC
     }
 
     /// Whether or not to allow user input in the view.
-    open var isEditingEnabled: Bool {
-        get { return isContentEditable }
-        set { isContentEditable = newValue }
+    
+    open var fetchIsEditingEnabled: AnyPublisher<Bool, Error> {
+        fetchIsContentEditable
+    }
+    
+    open func setIsEditingEnabled(_ newValue: Bool) {
+        setIsContentEditable(newValue)
     }
 
     /// The content HTML of the text being displayed.
@@ -88,18 +96,27 @@ import RichEditorView_ObjC
     private var innerLineHeight: Int = 28
 
     /// The line height of the editor. Defaults to 28.
-    open private(set) var lineHeight: Int {
-        get {
-            if isEditorLoaded, let lineHeight = Int(runJS("RE.getLineHeight();")) {
-                return lineHeight
+    public var fetchLineHeight: AnyPublisher<Int, Error> {
+        
+            if self.isEditorLoaded {
+                
+                return self.runJSFuture("RE.getLineHeight();")
+                    .map { $0 as? String }
+                    .map { Int($0 ?? "") }
+                    .map { $0 ?? self.innerLineHeight }
+                    .eraseToAnyPublisher()
             } else {
-                return innerLineHeight
+                
+                return Just(innerLineHeight)
+                    .mapError { _ in REError.genericREError }
+                    .eraseToAnyPublisher()
             }
-        }
-        set {
-            innerLineHeight = newValue
-            runJS("RE.setLineHeight('\(innerLineHeight)px');")
-        }
+    }
+    
+    public func setLineHeight(_ newLineHeight: Int) {
+        
+        innerLineHeight = newLineHeight
+        runJSSilently("RE.setLineHeight('\(innerLineHeight)px');")
     }
 
     // MARK: Private Properties
@@ -116,34 +133,44 @@ import RichEditorView_ObjC
 
     /// The inner height of the editor div.
     /// Fetches it from JS every time, so might be slow!
-    private var clientHeight: Int {
-        let heightString = runJS("document.getElementById('editor').clientHeight;")
-        return Int(heightString) ?? 0
+    private var fetchClientHeight: AnyPublisher<Int, Error> {
+        runJSFuture("document.getElementById('editor').clientHeight;")
+            .map { $0 as? String }
+            .map { Int($0 ?? "") }
+            .map { $0 ?? 0 }
+            .eraseToAnyPublisher()
     }
-
+    
     // MARK: Initialization
     
     public override init(frame: CGRect) {
-        webView = UIWebView()
+        
+        webView = WKWebView(frame: frame, configuration: RichEditorView.wkWebViewConfiguration)
         super.init(frame: frame)
         setup()
     }
 
     required public init?(coder aDecoder: NSCoder) {
-        webView = UIWebView()
+        webView = WKWebView()
         super.init(coder: aDecoder)
         setup()
     }
+    
+    private static var wkWebViewConfiguration: WKWebViewConfiguration = {
+        
+        let configuration = WKWebViewConfiguration()
+        configuration.dataDetectorTypes = WKDataDetectorTypes()
+        
+        return configuration
+    }()
     
     private func setup() {
         backgroundColor = .red
         
         webView.frame = bounds
-        webView.delegate = self
-        webView.keyboardDisplayRequiresUserAction = false
-        webView.scalesPageToFit = false
+        webView.navigationDelegate = self
+        webView.setKeyboardRequiresUserInteraction(false)
         webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        webView.dataDetectorTypes = UIDataDetectorTypes()
         webView.backgroundColor = .white
         
         webView.scrollView.isScrollEnabled = isScrollEnabled
@@ -158,7 +185,7 @@ import RichEditorView_ObjC
         if let filePath = Bundle.module.path(forResource: "rich_editor", ofType: "html") {
             let url = URL(fileURLWithPath: filePath, isDirectory: false)
             let request = URLRequest(url: url)
-            webView.loadRequest(request)
+            webView.load(request)
         }
 
         tapRecognizer.addTarget(self, action: #selector(viewWasTapped))
@@ -172,22 +199,28 @@ import RichEditorView_ObjC
 
     /// The HTML that is currently loaded in the editor view, if it is loaded. If it has not been loaded yet, it is the
     /// HTML that will be loaded into the editor view once it finishes initializing.
-    public var html: String {
-        get {
-            return runJS("RE.getHtml();")
-        }
-        set {
-            contentHTML = newValue
-            if isEditorLoaded {
-                runJS("RE.setHtml('\(newValue.escaped)');")
-                updateHeight()
-            }
+    public var fetchHTML: AnyPublisher<String, Error> {
+        runJSFuture("RE.getHtml();")
+            .map { $0 as? String }
+            .map { $0 ?? "" }
+            .eraseToAnyPublisher()
+    }
+    
+    public func setHTML(_ newValue: String) {
+        
+        contentHTML = newValue
+        if isEditorLoaded {
+            runJSSilently("RE.setHtml('\(newValue.escaped)');")
+            updateHeight()
         }
     }
 
     /// Text representation of the data that has been input into the editor view, if it has been loaded.
-    public var text: String {
-        return runJS("RE.getText()")
+    public var fetchText: AnyPublisher<String, Error> {
+        runJSFuture("RE.getText()")
+            .map { $0 as? String }
+            .map { $0 ?? "" }
+            .eraseToAnyPublisher()
     }
 
     /// Private variable that holds the placeholder text, so you can set the placeholder before the editor loads.
@@ -197,153 +230,179 @@ import RichEditorView_ObjC
         get { return placeholderText }
         set {
             placeholderText = newValue
-            runJS("RE.setPlaceholderText('\(newValue.escaped)');")
+            runJSSilently("RE.setPlaceholderText('\(newValue.escaped)');")
         }
     }
 
 
     /// The href of the current selection, if the current selection's parent is an anchor tag.
     /// Will be nil if there is no href, or it is an empty string.
-    public var selectedHref: String? {
-        if !hasRangeSelection { return nil }
-        let href = runJS("RE.getSelectedHref();")
-        if href == "" {
-            return nil
-        } else {
-            return href
-        }
+    public var fetchSelectedHref: AnyPublisher<String?, Error> {
+        
+        fetchHasRangeSelection
+            .flatMap { hasRangeSelection -> AnyPublisher<String?, Error> in
+                if !hasRangeSelection {
+                    return Just(nil)
+                        .mapError { _ in REError.genericREError }
+                        .eraseToAnyPublisher()
+                }
+                
+                return self.runJSFuture("RE.getSelectedHref();")
+                    .map { $0 as? String }
+                    .map { $0 ?? "" }
+                    .map { href -> String? in
+                        
+                        if href == "" {
+                            return nil
+                        } else {
+                            return href
+                        }
+                    }
+                    .eraseToAnyPublisher()
+            }
+            .eraseToAnyPublisher()
     }
 
     /// Whether or not the selection has a type specifically of "Range".
-    public var hasRangeSelection: Bool {
-        return runJS("RE.rangeSelectionExists();") == "true" ? true : false
+    public var fetchHasRangeSelection: AnyPublisher<Bool, Error> {
+        
+        runJSFuture("RE.rangeSelectionExists();")
+            .map { $0 as? String }
+            .map { $0 ?? "false" }
+            .map {$0 == "true" ? true : false }
+            .eraseToAnyPublisher()
     }
 
     /// Whether or not the selection has a type specifically of "Range" or "Caret".
-    public var hasRangeOrCaretSelection: Bool {
-        return runJS("RE.rangeOrCaretSelectionExists();") == "true" ? true : false
+    public var fetchHasRangeOrCaretSelection: AnyPublisher<Bool, Error> {
+        
+        runJSFuture("RE.rangeSelectionExists();")
+            .map { $0 as? String }
+            .map { $0 ?? "false" }
+            .map {$0 == "true" ? true : false }
+            .eraseToAnyPublisher()
     }
 
     // MARK: Methods
 
     public func removeFormat() {
-        runJS("RE.removeFormat();")
+        runJSSilently("RE.removeFormat();")
     }
     
     public func setFontSize(_ size: Int) {
-        runJS("RE.setFontSize('\(size)px');")
+        runJSSilently("RE.setFontSize('\(size)px');")
     }
     
     public func setEditorBackgroundColor(_ color: UIColor) {
-        runJS("RE.setBackgroundColor('\(color.hex)');")
+        runJSSilently("RE.setBackgroundColor('\(color.hex)');")
     }
     
     public func undo() {
-        runJS("RE.undo();")
+        runJSSilently("RE.undo();")
     }
     
     public func redo() {
-        runJS("RE.redo();")
+        runJSSilently("RE.redo();")
     }
     
     public func bold() {
-        runJS("RE.setBold();")
+        runJSSilently("RE.setBold();")
     }
     
     public func italic() {
-        runJS("RE.setItalic();")
+        runJSSilently("RE.setItalic();")
     }
     
     // "superscript" is a keyword
     public func subscriptText() {
-        runJS("RE.setSubscript();")
+        runJSSilently("RE.setSubscript();")
     }
     
     public func superscript() {
-        runJS("RE.setSuperscript();")
+        runJSSilently("RE.setSuperscript();")
     }
     
     public func strikethrough() {
-        runJS("RE.setStrikeThrough();")
+        runJSSilently("RE.setStrikeThrough();")
     }
     
     public func underline() {
-        runJS("RE.setUnderline();")
+        runJSSilently("RE.setUnderline();")
     }
     
     public func setTextColor(_ color: UIColor) {
-        runJS("RE.prepareInsert();")
-        runJS("RE.setTextColor('\(color.hex)');")
+        runJSSilently("RE.prepareInsert();")
+        runJSSilently("RE.setTextColor('\(color.hex)');")
     }
     
     public func setEditorFontColor(_ color: UIColor) {
-        runJS("RE.setBaseTextColor('\(color.hex)');")
+        runJSSilently("RE.setBaseTextColor('\(color.hex)');")
     }
     
     public func setTextBackgroundColor(_ color: UIColor) {
-        runJS("RE.prepareInsert();")
-        runJS("RE.setTextBackgroundColor('\(color.hex)');")
+        runJSSilently("RE.prepareInsert();")
+        runJSSilently("RE.setTextBackgroundColor('\(color.hex)');")
     }
     
     public func header(_ h: Int) {
-        runJS("RE.setHeading('\(h)');")
+        runJSSilently("RE.setHeading('\(h)');")
     }
 
     public func indent() {
-        runJS("RE.setIndent();")
+        runJSSilently("RE.setIndent();")
     }
 
     public func outdent() {
-        runJS("RE.setOutdent();")
+        runJSSilently("RE.setOutdent();")
     }
 
     public func orderedList() {
-        runJS("RE.setOrderedList();")
+        runJSSilently("RE.setOrderedList();")
     }
 
     public func unorderedList() {
-        runJS("RE.setUnorderedList();")
+        runJSSilently("RE.setUnorderedList();")
     }
 
     public func blockquote() {
-        runJS("RE.setBlockquote()");
+        runJSSilently("RE.setBlockquote()");
     }
     
     public func alignLeft() {
-        runJS("RE.setJustifyLeft();")
+        runJSSilently("RE.setJustifyLeft();")
     }
     
     public func alignCenter() {
-        runJS("RE.setJustifyCenter();")
+        runJSSilently("RE.setJustifyCenter();")
     }
     
     public func alignRight() {
-        runJS("RE.setJustifyRight();")
+        runJSSilently("RE.setJustifyRight();")
     }
     
     public func insertImage(_ url: String, alt: String) {
-        runJS("RE.prepareInsert();")
-        runJS("RE.insertImage('\(url.escaped)', '\(alt.escaped)');")
+        runJSSilently("RE.prepareInsert();")
+        runJSSilently("RE.insertImage('\(url.escaped)', '\(alt.escaped)');")
     }
     
     public func insertLink(_ href: String, title: String) {
-        runJS("RE.prepareInsert();")
-        runJS("RE.insertLink('\(href.escaped)', '\(title.escaped)');")
+        runJSSilently("RE.prepareInsert();")
+        runJSSilently("RE.insertLink('\(href.escaped)', '\(title.escaped)');")
     }
     
     public func focus() {
-        runJS("RE.focus();")
+        runJSSilently("RE.focus();")
     }
 
     public func focus(at: CGPoint) {
-        runJS("RE.focusAtPoint(\(at.x), \(at.y));")
+        runJSSilently("RE.focusAtPoint(\(at.x), \(at.y));")
     }
     
     public func blur() {
-        runJS("RE.blurFocus()")
+        runJSSilently("RE.blurFocus()")
     }
-
-    /// Runs some JavaScript on the UIWebView and returns the result
+/*
+    /// Runs some JavaScript on the WKWebView and returns the result
     /// If there is no result, returns an empty string
     /// - parameter js: The JavaScript string to be run
     /// - returns: The result of the JavaScript that was run
@@ -351,6 +410,11 @@ import RichEditorView_ObjC
     public func runJS(_ js: String) -> String {
         let string = webView.stringByEvaluatingJavaScript(from: js) ?? ""
         return string
+    }
+*/
+    
+    public func runJS(_ js: String, completionHandler: ((Any?, Error?) -> Void)? = nil) {
+        webView.evaluateJavaScript(js, completionHandler: completionHandler)
     }
 
 
@@ -366,49 +430,6 @@ import RichEditorView_ObjC
         }
     }
 
-
-    // MARK: UIWebViewDelegate
-
-    public func webView(_ webView: UIWebView, shouldStartLoadWith request: URLRequest, navigationType: UIWebView.NavigationType) -> Bool {
-
-        // Handle pre-defined editor actions
-        let callbackPrefix = "re-callback://"
-        if request.url?.absoluteString.hasPrefix(callbackPrefix) == true {
-            
-            // When we get a callback, we need to fetch the command queue to run the commands
-            // It comes in as a JSON array of commands that we need to parse
-            let commands = runJS("RE.getCommandQueue();")
-
-            if let data = commands.data(using: .utf8) {
-                
-                let jsonCommands: [String]
-                do {
-                    jsonCommands = try JSONSerialization.jsonObject(with: data) as? [String] ?? []
-                } catch {
-                    jsonCommands = []
-                    NSLog("RichEditorView: Failed to parse JSON Commands")
-                }
-
-                jsonCommands.forEach(performCommand)
-            }
-
-            return false
-        }
-        
-        // User is tapping on a link, so we should react accordingly
-        if navigationType == .linkClicked {
-            if let
-                url = request.url,
-                let shouldInteract = delegate?.richEditor?(self, shouldInteractWith: url)
-            {
-                return shouldInteract
-            }
-        }
-        
-        return true
-    }
-
-
     // MARK: UIGestureRecognizerDelegate
 
     /// Delegate method for our UITapGestureDelegate.
@@ -419,40 +440,63 @@ import RichEditorView_ObjC
 
 
     // MARK: - Private Implementation Details
+    
+    private var fetchIsContentEditable: AnyPublisher<Bool, Error> {
+        
+        if isEditorLoaded {
+            
+            return runJSFuture("RE.editor.isContentEditable")
+                .map { $0 as? Bool }
+                .map { $0 ?? false }
+                .handleEvents(receiveOutput: {
+                    self.editingEnabledVar = $0
+                })
+                .eraseToAnyPublisher()
+        } else {
+            
+            return Just(editingEnabledVar)
+                .mapError { _ in REError.genericREError }
+                .eraseToAnyPublisher()
+        }
+    }
+    
+    private func setIsContentEditable(_ newValue: Bool) {
+        
+        editingEnabledVar = newValue
+        if isEditorLoaded {
+            let value = newValue ? "true" : "false"
+            runJSSilently("RE.editor.contentEditable = \(value);")
+        }
 
-    private var isContentEditable: Bool {
-        get {
-            if isEditorLoaded {
-                let value = runJS("RE.editor.isContentEditable")
-                editingEnabledVar = Bool(value) ?? false
-                return editingEnabledVar
-            }
-            return editingEnabledVar
-        }
-        set {
-            editingEnabledVar = newValue
-            if isEditorLoaded {
-                let value = newValue ? "true" : "false"
-                runJS("RE.editor.contentEditable = \(value);")
-            }
-        }
     }
     
     /// The position of the caret relative to the currently shown content.
     /// For example, if the cursor is directly at the top of what is visible, it will return 0.
     /// This also means that it will be negative if it is above what is currently visible.
     /// Can also return 0 if some sort of error occurs between JS and here.
-    private var relativeCaretYPosition: Int {
-        let string = runJS("RE.getRelativeCaretYPosition();")
-        return Int(string) ?? 0
-    }
+    private var fetchRelativeCaretYPosition: AnyPublisher<Int, Error> {
+        return self.runJSFuture("RE.getRelativeCaretYPosition();")
+            .map { $0 as? String }
+            .map { Int($0 ?? "") }
+            .map { $0 ?? 0 }
+            .eraseToAnyPublisher()
 
+    }
+    
     private func updateHeight() {
-        let heightString = runJS("document.getElementById('editor').clientHeight;")
-        let height = Int(heightString) ?? 0
-        if editorHeight != height {
-            editorHeight = height
-        }
+        
+        runJSFuture("document.getElementById('editor').clientHeight;")
+            .map { $0 as? String }
+            .map { Int($0 ?? "") }
+            .map { $0 ?? 0 }
+            .handleEvents(receiveOutput: {
+                
+                if self.editorHeight != $0 {
+                    self.editorHeight = $0
+                }
+            })
+            .sink { _ in } receiveValue: { _ in }
+            .store(in: &anyCancellables)
     }
 
     /// Scrolls the editor to a position where the caret is visible.
@@ -461,30 +505,40 @@ import RichEditorView_ObjC
     private func scrollCaretToVisible() {
         let scrollView = self.webView.scrollView
         
-        let contentHeight = clientHeight > 0 ? CGFloat(clientHeight) : scrollView.frame.height
-        scrollView.contentSize = CGSize(width: scrollView.frame.width, height: contentHeight)
+        fetchClientHeight.handleEvents(receiveOutput: { clientHeightInt in
+            
+            let contentHeight = clientHeightInt > 0 ? CGFloat(clientHeightInt) : scrollView.frame.height
+            scrollView.contentSize = CGSize(width: scrollView.frame.width, height: contentHeight)
+        })
+        .sink { _ in } receiveValue: { _ in }
+        .store(in: &anyCancellables)
         
-        // XXX: Maybe find a better way to get the cursor height
-        let lineHeight = CGFloat(self.lineHeight)
-        let cursorHeight = lineHeight - 4
-        let visiblePosition = CGFloat(relativeCaretYPosition)
-        var offset: CGPoint?
+        fetchLineHeight.combineLatest(fetchRelativeCaretYPosition)
+            .handleEvents(receiveOutput: { (lineHeightInt, relativeCaretYPositionInt) in
+                // XXX: Maybe find a better way to get the cursor height
+                let lineHeight = CGFloat(lineHeightInt)
+                let cursorHeight = lineHeight - 4
+                let visiblePosition = CGFloat(relativeCaretYPositionInt)
+                var offset: CGPoint?
 
-        if visiblePosition + cursorHeight > scrollView.bounds.size.height {
-            // Visible caret position goes further than our bounds
-            offset = CGPoint(x: 0, y: (visiblePosition + lineHeight) - scrollView.bounds.height + scrollView.contentOffset.y)
+                if visiblePosition + cursorHeight > scrollView.bounds.size.height {
+                    // Visible caret position goes further than our bounds
+                    offset = CGPoint(x: 0, y: (visiblePosition + lineHeight) - scrollView.bounds.height + scrollView.contentOffset.y)
 
-        } else if visiblePosition < 0 {
-            // Visible caret position is above what is currently visible
-            var amount = scrollView.contentOffset.y + visiblePosition
-            amount = amount < 0 ? 0 : amount
-            offset = CGPoint(x: scrollView.contentOffset.x, y: amount)
+                } else if visiblePosition < 0 {
+                    // Visible caret position is above what is currently visible
+                    var amount = scrollView.contentOffset.y + visiblePosition
+                    amount = amount < 0 ? 0 : amount
+                    offset = CGPoint(x: scrollView.contentOffset.x, y: amount)
 
-        }
+                }
 
-        if let offset = offset {
-            scrollView.setContentOffset(offset, animated: true)
-        }
+                if let offset = offset {
+                    scrollView.setContentOffset(offset, animated: true)
+                }
+            })
+            .sink { _ in } receiveValue: { _ in }
+            .store(in: &anyCancellables)
     }
     
     /// Called when actions are received from JavaScript
@@ -494,18 +548,24 @@ import RichEditorView_ObjC
             // If loading for the first time, we have to set the content HTML to be displayed
             if !isEditorLoaded {
                 isEditorLoaded = true
-                html = contentHTML
-                isContentEditable = editingEnabledVar
+                setHTML(contentHTML)
+                setIsContentEditable(editingEnabledVar)
                 placeholder = placeholderText
-                lineHeight = innerLineHeight
+                setLineHeight(innerLineHeight)
                 delegate?.richEditorDidLoad?(self)
             }
             updateHeight()
         }
         else if method.hasPrefix("input") {
             scrollCaretToVisible()
-            let content = runJS("RE.getHtml()")
-            contentHTML = content
+            runJSFuture("RE.getHtml()")
+                .map { $0 as? String }
+                .map { $0 ?? "" }
+                .handleEvents(receiveOutput: {
+                    self.contentHTML = $0
+                })
+                .sink { _ in } receiveValue: { _ in }
+                .store(in: &anyCancellables)
             updateHeight()
         }
         else if method.hasPrefix("updateHeight") {
@@ -518,15 +578,22 @@ import RichEditorView_ObjC
             delegate?.richEditorLostFocus?(self)
         }
         else if method.hasPrefix("action/") {
-            let content = runJS("RE.getHtml()")
-            contentHTML = content
-            
-            // If there are any custom actions being called
-            // We need to tell the delegate about it
-            let actionPrefix = "action/"
-            let range = method.range(of: actionPrefix)!
-            let action = method.replacingCharacters(in: range, with: "")
-            delegate?.richEditor?(self, handle: action)
+            runJSFuture("RE.getHtml()")
+                .map { $0 as? String }
+                .map { $0 ?? "" }
+                .handleEvents(receiveOutput: { content in
+                    self.contentHTML = content
+                    
+                    // If there are any custom actions being called
+                    // We need to tell the delegate about it
+                    let actionPrefix = "action/"
+                    let range = method.range(of: actionPrefix)!
+                    let action = method.replacingCharacters(in: range, with: "")
+                    self.delegate?.richEditor?(self, handle: action)
+
+                })
+                .sink { _ in } receiveValue: { _ in }
+                .store(in: &anyCancellables)
         }
     }
 
@@ -555,4 +622,98 @@ import RichEditorView_ObjC
         return true
     }
 
+}
+
+//extension RichEditorView: UIWebViewDelegate {
+//
+//    // MARK: UIWebViewDelegate
+//
+//    public func webView(_ webView: UIWebView, shouldStartLoadWith request: URLRequest, navigationType: UIWebViewNavigationType) -> Bool {
+//
+//        // Handle pre-defined editor actions
+//        let callbackPrefix = "re-callback://"
+//        if request.url?.absoluteString.hasPrefix(callbackPrefix) == true {
+//
+//            // When we get a callback, we need to fetch the command queue to run the commands
+//            // It comes in as a JSON array of commands that we need to parse
+//            let commands = runJS("RE.getCommandQueue();")
+//
+//            if let data = commands.data(using: .utf8) {
+//
+//                let jsonCommands: [String]
+//                do {
+//                    jsonCommands = try JSONSerialization.jsonObject(with: data) as? [String] ?? []
+//                } catch {
+//                    jsonCommands = []
+//                    NSLog("RichEditorView: Failed to parse JSON Commands")
+//                }
+//
+//                jsonCommands.forEach(performCommand)
+//            }
+//
+//            return false
+//        }
+//
+//        // User is tapping on a link, so we should react accordingly
+//        if navigationType == .linkClicked {
+//            if let
+//                url = request.url,
+//                let shouldInteract = delegate?.richEditor?(self, shouldInteractWith: url)
+//            {
+//                return shouldInteract
+//            }
+//        }
+//
+//        return true
+//    }
+//}
+
+extension RichEditorView: WKNavigationDelegate {
+    
+    public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        
+        let navigationType = navigationAction.navigationType
+        let request = navigationAction.request
+        
+        // Handle pre-defined editor actions
+        let callbackPrefix = "re-callback://"
+        if request.url?.absoluteString.hasPrefix(callbackPrefix) == true {
+            
+            // When we get a callback, we need to fetch the command queue to run the commands
+            // It comes in as a JSON array of commands that we need to parse
+            runJSFuture("RE.getCommandQueue();")
+                .map { $0 as? String }
+                .map { $0 ?? "" }
+                .handleEvents(receiveOutput: { commands in
+                    
+                    if let data = commands.data(using: .utf8) {
+                        
+                        let jsonCommands: [String]
+                        do {
+                            jsonCommands = try JSONSerialization.jsonObject(with: data) as? [String] ?? []
+                        } catch {
+                            jsonCommands = []
+                            NSLog("RichEditorView: Failed to parse JSON Commands")
+                        }
+                        
+                        jsonCommands.forEach(self.performCommand)
+                    }
+                    decisionHandler(.cancel)
+                })
+                .sink { _ in } receiveValue: { _ in }
+                .store(in: &anyCancellables)
+
+        }
+        
+        // User is tapping on a link, so we should react accordingly
+        if navigationType == .linkActivated {
+            if let
+                url = request.url,
+                let shouldInteract = delegate?.richEditor?(self, shouldInteractWith: url)
+            {
+                decisionHandler(shouldInteract ? .allow : .cancel)
+            }
+        }
+        decisionHandler(.allow)
+    }
 }
