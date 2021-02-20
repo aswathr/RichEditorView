@@ -49,11 +49,21 @@ import Combine
     /// The delegate that will receive callbacks when certain actions are completed.
     open weak var delegate: RichEditorDelegate?
 
-    /// Input accessory view to display over they keyboard.
-    /// Defaults to nil
+//    /// Input accessory view to display over they keyboard.
+//    /// Defaults to nil
+//    open override var inputAccessoryView: UIView? {
+//        get { return webView.inputAccessoryView }
+//        set { webView.inputAccessoryView = newValue }
+//    }
+    
     open override var inputAccessoryView: UIView? {
-        get { return webView.cjw_inputAccessoryView }
-        set { webView.cjw_inputAccessoryView = newValue }
+        get {
+            
+            webView.getCustomInputAccessoryView()
+        } set {
+            
+            webView.addInputAccessoryView(toolbar: newValue)
+        }
     }
 
     /// The internal WKWebView that is used to display the text.
