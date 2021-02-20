@@ -702,7 +702,7 @@ extension RichEditorView: WKNavigationDelegate {
                 })
                 .sink { _ in } receiveValue: { _ in }
                 .store(in: &anyCancellables)
-
+            return
         }
         
         // User is tapping on a link, so we should react accordingly
@@ -712,6 +712,7 @@ extension RichEditorView: WKNavigationDelegate {
                 let shouldInteract = delegate?.richEditor?(self, shouldInteractWith: url)
             {
                 decisionHandler(shouldInteract ? .allow : .cancel)
+                return
             }
         }
         decisionHandler(.allow)
