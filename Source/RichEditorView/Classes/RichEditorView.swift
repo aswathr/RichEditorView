@@ -37,6 +37,10 @@ import Combine
     /// Called when custom actions are called by callbacks in the JS
     /// By default, this method is not used unless called by some custom JS that you add
     @objc optional func richEditor(_ editor: RichEditorView, handle action: String)
+    
+//    /// Tells when webview is done loading
+    @objc optional func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!)
+
 }
 
 /// RichEditorView is a UIView that displays richly styled text, and allows it to be edited in a WYSIWYG fashion.
@@ -145,8 +149,9 @@ import Combine
     /// Fetches it from JS every time, so might be slow!
     private var fetchClientHeight: AnyPublisher<Int, Error> {
         runJSFuture("document.getElementById('editor').clientHeight;")
-            .map { $0 as? String }
-            .map { Int($0 ?? "") }
+            .map { $0 as? Int }
+//            .map { $0 as? String }
+//            .map { Int($0 ?? "") }
             .map { $0 ?? 0 }
             .eraseToAnyPublisher()
     }
@@ -168,8 +173,10 @@ import Combine
     
     private static var wkWebViewConfiguration: WKWebViewConfiguration = {
         
+        let userContentController = WKUserContentController(javaScript: WKWebView.scalePages(by: 1.0))
         let configuration = WKWebViewConfiguration()
         configuration.dataDetectorTypes = WKDataDetectorTypes()
+        configuration.userContentController = userContentController
         
         return configuration
     }()
@@ -222,6 +229,18 @@ import Combine
         if isEditorLoaded {
             runJSSilently("RE.setHtml('\(newValue.escaped)');")
             updateHeight()
+            
+            
+//            runJSFuture("RE.setHtml('\(newValue.escaped)');")
+//                .sink { _ in }
+//                    receiveValue: { _ in
+//
+//                        self.contentHTML = newValue
+//                        self.updateHeight()
+//                    }
+//                .store(in: &anyCancellables)
+
+            
         }
     }
 
@@ -494,10 +513,10 @@ import Combine
     }
     
     private func updateHeight() {
-        
+
         runJSFuture("document.getElementById('editor').clientHeight;")
-            .map { $0 as? String }
-            .map { Int($0 ?? "") }
+            .map { $0 as? NSNumber }
+            .map { $0?.intValue }
             .map { $0 ?? 0 }
             .handleEvents(receiveOutput: {
                 
@@ -726,5 +745,11 @@ extension RichEditorView: WKNavigationDelegate {
             }
         }
         decisionHandler(.allow)
+    }
+    
+    public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+
+//        webView.scalesPageToFit()
+        delegate?.webView?(webView, didCommit: navigation)
     }
 }

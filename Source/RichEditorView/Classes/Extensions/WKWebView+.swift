@@ -60,20 +60,48 @@ extension WKWebView {
         method_setImplementation(method, imp)
     }
     
-    func scalesPageToFit() {
-        
-        let javaScript = """
+    static var scalesPageToFitJS: String {
+        """
+            var meta = document.createElement('meta');
+            meta.setAttribute('name', 'viewport');
+            meta.setAttribute('content', 'width=device-width');
+            document.getElementsByTagName('head')[0].appendChild(meta);
+        """
+    }
+    
+    static func scalePages(by constantFactor: CGFloat) -> String {
+
+        let constantFactorRounded = String(format: "%.1f", constantFactor)
+        return """
             var meta = document.createElement('meta');
                         meta.setAttribute('name', 'viewport');
-                        meta.setAttribute('content', 'width=device-width');
+                        meta.setAttribute('content', 'width=device-width, initial-scale=\(constantFactorRounded), shrink-to-fit=no');
                         document.getElementsByTagName('head')[0].appendChild(meta);
             """
-
+    }
+    
+    func scalesPageToFit() {
+        
+        let javaScript = WKWebView.scalesPageToFitJS
+        self.evaluateJavaScript(javaScript)
+    }
+    
+    func scalePages(by constantFactor: CGFloat) {
+        
+        let javaScript = WKWebView.scalePages(by: constantFactor)
         self.evaluateJavaScript(javaScript)
     }
 }
 
-
+extension WKUserContentController {
+    
+    convenience init(javaScript: String) {
+        
+        self.init()
+        let userScript = WKUserScript(source: javaScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+        addUserScript(userScript)
+    }
+}
 
 
 

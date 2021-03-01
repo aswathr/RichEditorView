@@ -8,6 +8,9 @@
 import Foundation
 import Combine
 
+enum RichEditorViewCombineError: Error {
+    case resultNil
+}
 extension RichEditorView {
     
     func runJSFuture(_ js: String) -> Future<Any?, Error> {
@@ -31,3 +34,4 @@ extension RichEditorView {
         runJS(js) { (_, _) in }
     }
 }
+
