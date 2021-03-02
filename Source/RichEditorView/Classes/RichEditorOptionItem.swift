@@ -75,6 +75,8 @@ public enum RichEditorDefaultOption: RichEditorOption {
     case image
     case link
     
+    static var useSystemImages: Bool = true // Toggle this for using system/ user images
+    
     public static let all: [RichEditorDefaultOption] = [
         .clear,
         .undo, .redo, .bold, .italic,
@@ -88,6 +90,9 @@ public enum RichEditorDefaultOption: RichEditorOption {
     // MARK: RichEditorOption
 
     public var image: UIImage? {
+        
+        if Self.useSystemImages { return systemImage }
+        
         var name = ""
         switch self {
         case .clear: name = "clear"
@@ -115,6 +120,35 @@ public enum RichEditorDefaultOption: RichEditorOption {
         
         let bundle = Bundle.module
         return UIImage(named: name, in: bundle, compatibleWith: nil)
+    }
+    
+    public var systemImage: UIImage? {
+        var name = ""
+        switch self {
+        case .clear: name = "xmark"
+        case .undo: name = "arrow.uturn.left"
+        case .redo: name = "arrow.uturn.right"
+        case .bold: name = "bold"
+        case .italic: name = "italic"
+        case .subscript: name = "textformat.subscript"
+        case .superscript: name = "textformat.superscript"
+        case .strike: name = "strikethrough"
+        case .underline: name = "underline"
+        case .textColor: name = "drop"
+        case .textBackgroundColor: name = "drop.triangle.fill"
+        case .header(let h): name = "\(h).square"
+        case .indent: name = "increase.indent"
+        case .outdent: name = "decrease.indent"
+        case .orderedList: name = "list.number"
+        case .unorderedList: name = "list.bullet"
+        case .alignLeft: name = "text.justifyleft"
+        case .alignCenter: name = "text.aligncenter"
+        case .alignRight: name = "text.justifyright"
+        case .image: name = "photo"
+        case .link: name = "link"
+        }
+        
+        return UIImage(systemName: name)
     }
     
     public var title: String {
