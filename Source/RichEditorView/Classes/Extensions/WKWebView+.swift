@@ -50,7 +50,7 @@ extension WKWebView {
         }
     }
     
-    func swizzleAutofocusMethod(_ method: Method, _ selector: Selector, _ value: Bool) {
+    public func swizzleAutofocusMethod(_ method: Method, _ selector: Selector, _ value: Bool) {
         let originalImp: IMP = method_getImplementation(method)
         let original: NewClosureType = unsafeBitCast(originalImp, to: NewClosureType.self)
         let block : @convention(block) (Any, UnsafeRawPointer, Bool, Bool, Bool, Any?) -> Void = { (me, arg0, arg1, arg2, arg3, arg4) in
@@ -60,7 +60,7 @@ extension WKWebView {
         method_setImplementation(method, imp)
     }
     
-    static var scalesPageToFitJS: String {
+    public static var scalesPageToFitJS: String {
         """
             var meta = document.createElement('meta');
             meta.setAttribute('name', 'viewport');
@@ -69,7 +69,7 @@ extension WKWebView {
         """
     }
     
-    static func scalePages(by constantFactor: CGFloat) -> String {
+    public static func scalePagesJS(by constantFactor: CGFloat) -> String {
 
         let constantFactorRounded = String(format: "%.1f", constantFactor)
         return """
@@ -80,20 +80,20 @@ extension WKWebView {
             """
     }
     
-    func scalesPageToFit() {
+    public func scalesPageToFit() {
         
         let javaScript = WKWebView.scalesPageToFitJS
         self.evaluateJavaScript(javaScript)
     }
     
-    func scalePages(by constantFactor: CGFloat) {
+    public func scalePages(by constantFactor: CGFloat) {
         
-        let javaScript = WKWebView.scalePages(by: constantFactor)
+        let javaScript = WKWebView.scalePagesJS(by: constantFactor)
         self.evaluateJavaScript(javaScript)
     }
 }
 
-extension WKUserContentController {
+public extension WKUserContentController {
     
     convenience init(javaScript: String) {
         

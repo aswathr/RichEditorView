@@ -47,6 +47,8 @@ import Combine
 @objcMembers open class RichEditorView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
 
     var anyCancellables = Set<AnyCancellable>()
+        
+    open var setupHTMLRequest: URLRequest? = REVConstants.defaultSetupURLRequest
     
     // MARK: Public Properties
 
@@ -140,7 +142,7 @@ import Combine
 
     /// Value that stores whether or not the content should be editable when the editor is loaded.
     /// Is basically `isEditingEnabled` before the editor is loaded.
-    private var editingEnabledVar = true
+    open var editingEnabledVar = true
 
     /// The private internal tap gesture recognizer used to detect taps and focus the editor
     private let tapRecognizer = UITapGestureRecognizer()
@@ -149,9 +151,8 @@ import Combine
     /// Fetches it from JS every time, so might be slow!
     private var fetchClientHeight: AnyPublisher<Int, Error> {
         runJSFuture("document.getElementById('editor').clientHeight;")
-            .map { $0 as? Int }
-//            .map { $0 as? String }
-//            .map { Int($0 ?? "") }
+            .map { $0 as? NSNumber }
+            .map { $0?.intValue }
             .map { $0 ?? 0 }
             .eraseToAnyPublisher()
     }
@@ -160,7 +161,16 @@ import Combine
     
     public override init(frame: CGRect) {
         
-        webView = WKWebView(frame: frame, configuration: RichEditorView.wkWebViewConfiguration)
+        webView = WKWebView(frame: frame, configuration: RichEditorView.defaultWKWebViewConfiguration)
+        self.setupHTMLRequest = REVConstants.defaultSetupURLRequest
+        super.init(frame: frame)
+        setup()
+    }
+    
+    public init(frame: CGRect, configuration: WKWebViewConfiguration = RichEditorView.defaultWKWebViewConfiguration, setupHTMLRequest: URLRequest? = REVConstants.defaultSetupURLRequest) {
+        
+        webView = WKWebView(frame: frame, configuration: configuration)
+        self.setupHTMLRequest = setupHTMLRequest
         super.init(frame: frame)
         setup()
     }
@@ -171,9 +181,9 @@ import Combine
         setup()
     }
     
-    private static var wkWebViewConfiguration: WKWebViewConfiguration = {
+    public static var defaultWKWebViewConfiguration: WKWebViewConfiguration = {
         
-        let userContentController = WKUserContentController(javaScript: WKWebView.scalePages(by: 1.0))
+        let userContentController = WKUserContentController(javaScript: WKWebView.scalePagesJS(by: 1.0))
         let configuration = WKWebViewConfiguration()
         configuration.dataDetectorTypes = WKDataDetectorTypes()
         configuration.userContentController = userContentController
@@ -199,10 +209,9 @@ import Combine
         
         self.addSubview(webView)
         
-        if let filePath = Bundle.module.path(forResource: "rich_editor", ofType: "html") {
-            let url = URL(fileURLWithPath: filePath, isDirectory: false)
-            let request = URLRequest(url: url)
-            webView.load(request)
+        if let requestUnwrapped = setupHTMLRequest {
+            
+            webView.load(requestUnwrapped)
         }
 
         tapRecognizer.addTarget(self, action: #selector(viewWasTapped))
@@ -227,8 +236,14 @@ import Combine
         
         contentHTML = newValue
         if isEditorLoaded {
-            runJSSilently("RE.setHtml('\(newValue.escaped)');")
-            updateHeight()
+            
+            runJSFuture("RE.setHtml('\(newValue.escaped)');")
+                .sink { _ in }
+                    receiveValue: { _ in
+                        
+                        self.updateHeight()
+                    }
+                .store(in: &anyCancellables)
             
             
 //            runJSFuture("RE.setHtml('\(newValue.escaped)');")
@@ -505,8 +520,8 @@ import Combine
     /// Can also return 0 if some sort of error occurs between JS and here.
     private var fetchRelativeCaretYPosition: AnyPublisher<Int, Error> {
         return self.runJSFuture("RE.getRelativeCaretYPosition();")
-            .map { $0 as? String }
-            .map { Int($0 ?? "") }
+            .map { $0 as? NSNumber }
+            .map { $0?.intValue }
             .map { $0 ?? 0 }
             .eraseToAnyPublisher()
 
@@ -514,10 +529,7 @@ import Combine
     
     private func updateHeight() {
 
-        runJSFuture("document.getElementById('editor').clientHeight;")
-            .map { $0 as? NSNumber }
-            .map { $0?.intValue }
-            .map { $0 ?? 0 }
+        fetchClientHeight
             .handleEvents(receiveOutput: {
                 
                 if self.editorHeight != $0 {
